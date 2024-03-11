@@ -28,8 +28,11 @@ __all__ = [
 class State:
     """
     Dict-based state class
+    对字典进行了简单的封装
     """
     def __init__(self) -> None:
+        # DataDict是自定的类型，对Python的字典进行了简单的封装，
+        # 使用方法类似JavaScript的object类型。
         self._state = DataDict()
 
     def state_dict(self) -> dict:
@@ -42,7 +45,9 @@ class State:
             self._state[k] = dict_in[k]
 
     def fetch_state_key(self, key: str) -> Any:
-        """Return a specific key"""
+        """Return a specific key
+        通过key获取value
+        """
         if key in self._state:
             return self._state[key]
         else:
@@ -59,6 +64,7 @@ class State:
 class LearningEngine(State):
     r"""
     Base class for learning engine
+    基于DataParallel，可进行单机多卡训练。
 
     By default, all available cuda devices will be used. To disable the usage or
     manually select devices, use the following command:
@@ -80,11 +86,46 @@ class LearningEngine(State):
         optim(str): Optimizer to be used. Choose between 'SGD' and 'Adam'
         optim_params(dict): Parameters for the selected optimizer
         optim_state_dict(dict): Optimizer state dict to be loaded
+        use_amp(bool): 使用自动混合精度训练(automatic mixed-precision training)，默认为True。
+            注意，use_amp=True只是将GradScalar实例赋值给了self._state.scaler，具体是否使用自动混合精度训练，
+            还是得看我们怎么覆盖_on_each_iteration()方法。
         lr_scheduler(bool): If True, use MultiStepLR as the learning rate scheduler
         lr_sched_params(dict): Parameters for the learning rate scheduler
         verbal(bool): If True, print statistics every fixed interval
         print_interval(int): Number of iterations to print statistics
         cache_dir(str): Directory to save checkpoints
+
+    [各方法的生命周期，根据实际需要进行覆盖]
+        self._on_start()                        # 在所有的epoch开始前被调用
+        for epoch
+            self._on_start_epoch()              # 在每个epoch开始前被调用。
+            for mini-batch
+                self._on_start_iteration()      # 在每个iteration开始前被调用。通常在这里将数据迁移到指定的设备
+                self._on_each_iteration()       # 前向传播、反向传播等过程。
+                self._on_end_iteration()        # 执行完每个iteration后被调用。
+            self._on_end_epoch()                # 执行完每个epoch后被调用。通常在这里保存checkpoint，执行lr_scheduler
+        self._on_end()                          # 执行完所有的epoch后被调用。
+
+        注：iteration指的是训练每个mini-batch的过程，epoch指的是训练整个数据集的过程
+
+    [self._state中存储的状态信息]
+        net: 模型
+        optimizer: 优化器
+        scaler: GradScalar实例，用于进行损失缩放
+        epoch：当前是第几个epoch
+        iteration：当前是第几个mini-batch
+        lr_scheduler: 学习率调整器
+
+		# NumericalMeter是对deque的封装，用于记录最近的print_interval次iteration产生的相关信息，以便进行日志输出
+        running_loss(NumericalMeter)：每个iteration(mini-batch)的损失
+        t_data(NumericalMeter)：加载一个mini-batch的数据所需的时间
+        t_iteration(NumericalMeter)：执行一个mini-batch的时间（包括加载数据、推理、反向传播等的时间）
+
+        # 下面这三个属性是针对每个iteration(mini-batch)的
+        inputs: 当前iteration下，模型的输入
+        targets：当前iteration下，样本的ground truth
+        loss: 当前iteration下，损失函数值
+
     """
     def __init__(self,
             net: Module, criterion: Callable, train_loader: Iterable,
@@ -100,6 +141,8 @@ class LearningEngine(State):
         self._device = torch.device('cuda:0') if torch.cuda.is_available() \
             else torch.device('cpu')
         self._multigpu = torch.cuda.device_count() > 1
+        # 如果损失函数是torch.nn.Module实例，则需要将其移动到GPU上，
+        # 反之如果只是一个可调用对象(例如torch.nn.functional)则直接使用即可
         self._criterion =  criterion if not isinstance(criterion, torch.nn.Module) \
             else criterion.to(self._device)
         self._train_loader = train_loader
@@ -110,16 +153,22 @@ class LearningEngine(State):
         if not os.path.exists(self._cache_dir):
             os.makedirs(self._cache_dir)
 
+        # 如果有多个GPU可用，则使用DataParallel包装模型，从而实现多GPU训练。
+        # 需要注意的是DataParallel是单进程多线程，仅适用于单机多卡，且速度通常慢于DistributedDataParallel
         self._state.net = torch.nn.DataParallel(net).to(self._device) if self._multigpu \
             else net.to(self._device)
         # Initialize optimizer
         net_params = [p for p in self._state.net.parameters() if p.requires_grad]
-        if optim_params is None:
+        if optim_params is None:  # 如果没有指定优化器的参数，则使用如下默认参数
             optim_params = {
                     'lr': 0.001,
                     'momentum': 0.9,
                     'weight_decay': 5e-4
             } if optim == 'SGD' else {'lr': 0.001, 'weight_decay': 5e-4}
+
+        # Note: eval()函数用于执行字符串中的表达式或代码，它接受一个字符串作为参数，并将字符串解析为Python表达式或代码进行执行。
+        # 因此该行代码等价于：
+        #   self._state.optimizer = getattr(torch.optim, optim)(net_params, **optim_params)
         self._state.optimizer = eval(f'torch.optim.{optim}')(net_params, **optim_params)
         # Load optimzer state dict if provided
         if optim_state_dict is not None:
@@ -129,26 +178,36 @@ class LearningEngine(State):
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self._device)
+
         # Initialise gradient scaler
+        # torch.cuda.amp.GradScaler 是 PyTorch 中用于自动混合精度训练的类。
+        # 它主要用于在训练过程中处理梯度的缩放和类型转换，以提高训练速度和减少内存占用。
+        # 在深度学习训练中，通常使用较低的浮点精度（如半精度浮点数）来表示权重、激活值和梯度，以减少计算和内存开销。
+        # 然而，使用较低的精度可能导致梯度下降过程中的数值不稳定性(如果数值很小，从高精度转到低精度可能使得数值变为0，
+        # 如果数值很大，则转换过程可能溢出)，从而影响模型的收敛性。
+        # torch.cuda.amp.GradScaler 的作用就是在进行梯度计算之前，将梯度值放大（缩放）到一个合适的范围，以提高数值稳定性。
+        # 在反向传播过程中，GradScaler 会将梯度缩放回原始范围，以便更新模型的权重。
         self._state.scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
-        self._state.epoch = 0
-        self._state.iteration = 0
+        self._state.epoch = 0  # 当前是第几个epoch
+        self._state.iteration = 0  # 当前是第几个batch
 
         # Initialize learning rate scheduler
+        # 默认使用MultiStepLR，在每个milestone时，将此前学习率乘以gamma
         lr_sched_params = {
-                'milestones': [50,100],
+                'milestones': [50,100],  # 即在第50个epoch和第100epoch分别将学习率乘以gamma
                 'gamma': 0.1
             } if lr_sched_params is None else lr_sched_params
         self._state.lr_scheduler = None if not lr_scheduler \
             else torch.optim.lr_scheduler.MultiStepLR(self._state.optimizer, **lr_sched_params)
 
+        # NumericalMeter是对deque的封装，当向其中append的元素个数超过maxlen时，最前面的元素会被自动弹出。
         self._state.running_loss = NumericalMeter(maxlen=print_interval)
         # Initialize timers
         self._state.t_data = NumericalMeter(maxlen=print_interval)
         self._state.t_iteration = NumericalMeter(maxlen=print_interval)
 
     def __call__(self, n: int) -> None:
-        self.num_epochs = n
+        self.num_epochs = n  # 训练时的迭代次数
         # Train for a specified number of epochs
         self._on_start()
         for _ in range(n):
@@ -158,13 +217,15 @@ class LearningEngine(State):
                 self._state.inputs = batch[:-1]
                 self._state.targets = batch[-1]
                 self._on_start_iteration()
+                # 记录加载每个batch的数据所花费的时间
                 self._state.t_data.append(time.time() - timestamp)
 
                 # Force network mode
-                self._state.net.train()
+                self._state.net.train()  # 训练模式
                 self._on_each_iteration()
                 self._state.running_loss.append(self._state.loss.item())
                 self._on_end_iteration()
+                # 记录训练每个batch的数据所花费的时间（包括加载数据的时间）
                 self._state.t_iteration.append(time.time() - timestamp)
                 timestamp = time.time()
                 
@@ -195,12 +256,16 @@ class LearningEngine(State):
             self._print_statistics()
 
     def _on_each_iteration(self):
-        with torch.cuda.amp.autocast(enabled=self._use_amp):
+        with torch.cuda.amp.autocast(enabled=self._use_amp):  # 自动混合精度训练
             self._state.output = self._state.net(*self._state.inputs)
             self._state.loss = self._criterion(self._state.output, self._state.targets)
         self._state.scaler.scale(self._state.loss).backward()
         self._state.scaler.step(self._state.optimizer)
         self._state.scaler.update()
+        # Note: zero_grad()放在这或者放在backward()的前面都可以，
+        # 因为梯度默认就是被初始化为None的，所以在执行第一个epoch的backward()时，我们可以省略zero_grad().
+        # Note: 将梯度设置为None而不是0，通常具有更低的内存占用，并且可以适度地提升性能，
+        # 但是它会改变某些行为，具体见https://pytorch.org/docs/stable/generated/torch.optim.Optimizer.zero_grad.html
         self._state.optimizer.zero_grad(set_to_none=True)
 
     def _print_statistics(self):
@@ -214,6 +279,7 @@ class LearningEngine(State):
             "Loss: {:.4f}, "
             "Time[Data/Iter.]: [{:.2f}s/{:.2f}s]".format(
             self._state.epoch, self.num_epochs,
+            # Note: zfill用于在字符串前面填充0，使得字符串的长度达到指定长度
             str(self._state.iteration - num_iter * (self._state.epoch - 1)).zfill(n_d),
             num_iter, self._state.running_loss.mean(),
             self._state.t_data.sum(), self._state.t_iteration.sum())

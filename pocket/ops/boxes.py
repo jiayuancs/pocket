@@ -112,6 +112,7 @@ def batched_pnms(
 def box_iou(boxes_1: Tensor, boxes_2: Tensor, encoding: str = 'coord') -> Tensor:
     """
     Compute intersection over union between boxes
+    计算IoU
 
     Parameters:
     -----------
@@ -121,13 +122,13 @@ def box_iou(boxes_1: Tensor, boxes_2: Tensor, encoding: str = 'coord') -> Tensor
         (M, 4) Bounding boxes formatted as [[x1, y1, x2, y2],...]
     encoding: str
         A string that indicates what the boxes encode
-            'coord': Coordinates of the two corners
-            'pixel': Pixel indices of the two corners
+            'coord': Coordinates of the two corners 给出的边界框左上角和右下角的坐标
+            'pixel': Pixel indices of the two corners 很少用
 
     Returns:
     --------
     torch.Tensor
-        Intersection over union of size (N, M)
+        Intersection over union of size (N, M) 每个预测框与每个真实框之间的IoU
 
     """
     if encoding == 'coord':
@@ -161,6 +162,7 @@ def box_iou(boxes_1: Tensor, boxes_2: Tensor, encoding: str = 'coord') -> Tensor
 def box_giou(boxes_1: Tensor, boxes_2: Tensor) -> Tensor:
     """
     Compute generalised intersection over union between boxes
+    计算GIoU
 
     Reference: Generalized Intersection over Union: A Metric and A Loss for Bounding Box Regression
     https://arxiv.org/abs/1902.09630

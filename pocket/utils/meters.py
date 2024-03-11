@@ -38,6 +38,19 @@ def div(numerator: Tensor, denom: Union[Tensor, int, float]) -> Tensor:
 class Meter:
     """
     Base class
+    记录评价指标值的工具，基于双端队列deque，当想deque中添加超过maxlen个数的元素时，
+    最左端的元素会被弹出。
+
+    示例：
+        # 最大长度为3
+        Meter meter(3)
+
+        meter.append(1)
+        meter.append(2)
+        meter.append(3)  # 此时容器的内容为：[1,2,3]
+
+        # 再添加一个元素，超出最大长度，导致最左端的元素被弹出
+        meter.append(1)  # 此时容器的内容为：[2,3,4]
     """
     def __init__(self, maxlen: Optional[int] = None) -> None:
         self._deque = deque(maxlen=maxlen)
@@ -60,7 +73,7 @@ class Meter:
         return reprstr
 
     def reset(self) -> None:
-        """Reset the meter"""
+        """Reset the meter(清空)"""
         self._deque.clear()
 
     def append(self, x: Any) -> None:
@@ -85,12 +98,15 @@ class Meter:
 
     @property
     def items(self) -> List[Any]:
-        """Return the content"""
+        """Return the content。
+        返回一个列表，包含所有元素
+        """
         return [item for item in self._deque]
 
 class NumericalMeter(Meter):
     """
     Meter class with numerals as elements
+    记录数值型的评价指标值的容器，仅支持存储int和float
     """
     VALID_TYPES = [int, float]
     
@@ -259,9 +275,12 @@ class AveragePrecisionMeter:
         Returns:
             ap(Tensor[1])
         """
+        # precision和recall
         prec, rec = tuple_
         dtype = rec.dtype
         ap = 0
+        # 只需要选取当Recall >= 0, 0.1, 0.2, ..., 1共11个点时的Precision最大值，
+        # 然后AP就是这11个Precision的平均值，mAP就是所有类别AP值的平均
         for t in torch.linspace(0, 1, 11, dtype=dtype):
             inds = torch.nonzero(rec >= t).squeeze()
             if inds.numel():
@@ -416,22 +435,30 @@ class DetectionAPMeter:
     A variant of AP meter, where network outputs are assumed to be class-specific.
     Different classes could potentially have different number of samples.
 
+    注：对于HOI detection人物而言，仅实现了HICO-DET的评估方法，暂不支持V-COCO.
+
     Required Arguments:
-        num_cls(int): Number of target classes
+        num_cls(int): Number of target classes. HOI的种类数量，对于HICO-DET而言，就是600.
     Optional Arguemnts:
         num_gt(iterable): Number of ground truth instances for each class. When left
             as None, all positives are assumed to have been included in the collected
             results. As a result, full recall is guaranteed when the lowest scoring
             example is accounted for.
+            每个HOI类别的实例个数，对于HICO-DET数据集而言，输入的就应该是长度为600的列表，
+            num_gt[i]表示第i个HOI类别对应的实例数量。
         algorithm(str, optional): A choice between '11P' and 'AUC'
             '11P': 11-point interpolation algorithm prior to voc2010
             'INT': Interpolation algorithm with all points used in voc2010
             'AUC': Precisely as the area under precision-recall curve
         nproc(int, optional): The number of processes used to compute mAP. Default: 20
+            用于计算mAP的进程数量，默认是20
         precision(int, optional): Precision used for float-point operations. Choose
             amongst 64, 32 and 16. Default is 64
+            浮点运算的计算精度，默认是float64
         output(list[tensor], optinoal): A collection of output scores for K classes
         labels(list[tensor], optinoal): Binary labels
+
+        output和labels是模型输出的预测结果，可以不指定，后面调用append()方法进行添加。
 
     Usage:
 
@@ -463,7 +490,7 @@ class DetectionAPMeter:
             raise AssertionError("Provided ground truth instances"
                 "do not have the same number of classes as specified")
 
-        self.num_cls = num_cls
+        self.num_cls = num_cls   # HOI类别个数
         self.num_gt = num_gt if num_gt is not None else \
             [None for _ in range(num_cls)]
         self.algorithm = algorithm
@@ -486,9 +513,13 @@ class DetectionAPMeter:
         else:
             raise AssertionError("Output and labels should both be given or None")
 
-        self._output_temp = [[] for _ in range(num_cls)]
-        self._labels_temp = [[] for _ in range(num_cls)]
-    
+        self._output_temp = [[] for _ in range(num_cls)]  # self._output_temp[i]存储被预测为第i个类别的所有预测结果的置信度分数
+        self._labels_temp = [[] for _ in range(num_cls)]  # self._output_temp[i]存储被预测为第i个类别的所有预测结果是否是true positive
+
+
+    # Note: Python中@classmethod修饰的方法与@staticmethod修饰的方法都可以通过类名或类的实例调用。
+    # 但是@classmethod修饰的方法内部能够访问类变量(类变量是定义在类中，而不是在类的实例中的变量)，
+    # 而@staticmethod修饰的方法不能够访问类变量。
     @classmethod
     def compute_ap(cls, output: List[Tensor], labels: List[Tensor],
             num_gt: Iterable, nproc: int, algorithm: str = 'AUC') -> Tuple[Tensor, Tensor]:
@@ -498,10 +529,10 @@ class DetectionAPMeter:
         could have different number of predictions.
 
         Arguments:
-            output(list[Tensor])
-            labels(list[Tensor])
+            output(list[Tensor]):
+            labels(list[Tensor]):
             num_gt(iterable): Number of ground truth instances for each class
-            nproc(int, optional): The number of processes used to compute mAP
+            nproc(int, optional): 进程数量
             algorithm(str): AP evaluation algorithm
         Returns:
             ap(Tensor[K])
@@ -523,8 +554,9 @@ class DetectionAPMeter:
             raise ValueError("Unknown algorithm option {}.".format(algorithm))
 
         # Avoid multiprocessing when the number of processes is fewer than two
+        # 单进程计算mAP
         if nproc < 2:
-            for idx in range(len(output)):
+            for idx in range(len(output)):  # 对每个类别
                 ap[idx], max_rec[idx] = cls.compute_ap_for_each((
                     idx, list(num_gt)[idx],
                     output[idx], labels[idx],
@@ -532,6 +564,7 @@ class DetectionAPMeter:
                 ))
             return ap, max_rec
 
+        # 多进程计算mAP
         with multiprocessing.get_context('spawn').Pool(nproc) as pool:
             for idx, results in enumerate(pool.map(
                 func=cls.compute_ap_for_each,
@@ -544,13 +577,22 @@ class DetectionAPMeter:
 
     @classmethod
     def compute_ap_for_each(cls, tuple_):
+        """计算单个类别的AP"""
+        # idx是当前的HOI类别编号(0~599)
+        # num_gt是当前这个类别的实例数量
+        # output是预测结果中，所有属于当前这个类别的预测结果的置信度
+        # labels是预测结果中，所有属于当前这个类别的预测结果是否是true positive
+        # algorithm是具体的mAP计算方法
         idx, num_gt, output, labels, algorithm = tuple_
         # Sanity check
+        # 一个真实的实例只能对应一个预测实例，这部分是由pocket/utils/association.py保证的。
         if num_gt is not None and labels.sum() > num_gt:
             raise AssertionError("Class {}: ".format(idx)+
                 "Number of true positives larger than that of ground truth")
         if len(output) and len(labels):
+            # 计算precision和recall
             prec, rec = cls.compute_pr_for_each(output, labels, num_gt)
+            # 交由具体的算法计算PR曲线下的面积
             return algorithm((prec, rec)), rec[-1]
         else:
             print("WARNING: Collected results are empty. "
@@ -561,6 +603,8 @@ class DetectionAPMeter:
     def compute_pr_for_each(output: Tensor, labels: Tensor,
             num_gt: Optional[Union[int, float]] = None) -> Tuple[Tensor, Tensor]:
         """
+        计算单个类别的PR曲线上的所有点
+
         Arguments:
             output(Tensor[N])
             labels(Tensor[N]): Binary labels for each sample
@@ -578,25 +622,29 @@ class DetectionAPMeter:
 
         prec = tp / (tp + fp)
         rec = div(tp, labels.sum().item()) if num_gt is None \
-            else div(tp, num_gt)
+            else div(tp, num_gt)  # 即所有为正的样本中预测为正的比例
 
         return prec, rec
 
     def append(self, output: Tensor, prediction: Tensor, labels: Tensor) -> None:
         """
         Add new results to the meter
+        添加新的预测结果。
 
         Arguments:
             output(tensor[N]): Output scores for each sample
+                对于HOI detection任务而言，output[i]表示第i个预测的置信度分数（通常由人框、物框、交互等的置信度分数计算得到）
             prediction(tensor[N]): Predicted classes 0~(K-1)
+                对于HOI detection任务而言，prediction[i]表示预测的第i个HOI的类别（对于HICO-DET数据集，类别编号从0到599）
             labels(tensor[N]): Binary labels for the predicted classes
+                对于HOI detection任务而言，labels[i]=1表示第i个预测是true positive，
         """
         if isinstance(output, torch.Tensor) and \
                 isinstance(prediction, torch.Tensor) and \
                 isinstance(labels, torch.Tensor):
             prediction = prediction.long()
             unique_cls = prediction.unique()
-            for cls_idx in unique_cls:
+            for cls_idx in unique_cls:  # 对每个类别
                 sample_idx = torch.nonzero(prediction == cls_idx).squeeze(1)
                 self._output_temp[cls_idx.item()] += output[sample_idx].tolist()
                 self._labels_temp[cls_idx.item()] += labels[sample_idx].tolist()
@@ -608,8 +656,9 @@ class DetectionAPMeter:
         Clear saved statistics
 
         Arguments:
-            keep_tracked(bool): If True, clear only the newly collected statistics
-                since last evaluation
+            keep_tracked(bool): If True, clear only the newly collected statistics since last evaluation
+                如果为True，则仅清除self._output_temp和self._labels_temp；
+                反之，则除了清除上述内容外，还清除self._output和self._labels
         """
         num_cls = len(self._output_temp)
         if not keep_old:
@@ -625,15 +674,21 @@ class DetectionAPMeter:
         Returns:
             torch.Tensor[K]: Average precisions for K classes
         """
+        # self._output是上一次eval()时添加进来的数据，这里将所有数据拼接到一起
         self._output = [torch.cat([
             out1, torch.as_tensor(out2, dtype=self._dtype)
         ]) for out1, out2 in zip(self._output, self._output_temp)]
+
         self._labels = [torch.cat([
             tar1, torch.as_tensor(tar2, dtype=self._dtype)
         ]) for tar1, tar2 in zip(self._labels, self._labels_temp)]
+
+        # 清空self._output_temp和self._labels_temp，以便用户调用append()添加其他预测结果
         self.reset(keep_old=True)
 
+        # 对目前收集到的预测结果进行评估
         self.ap, self.max_rec = self.compute_ap(self._output, self._labels, self.num_gt,
             nproc=self._nproc, algorithm=self.algorithm)
 
+        # 返回每个类别的AP，求平均即得到mAP
         return self.ap

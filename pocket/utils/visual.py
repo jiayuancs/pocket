@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 
 def draw_boxes(image, boxes, **kwargs):
     """Draw bounding boxes onto a PIL image
+    只是简单地在图片上绘制矩形框
 
     Arguments:
         image(PIL Image)
@@ -32,16 +33,20 @@ def draw_boxes(image, boxes, **kwargs):
         canvas.rectangle(box, **kwargs)
 
 def draw_box_pairs(image, boxes_1, boxes_2, width=1):
-    """Draw bounding box pairs onto a PIL image. Boxes corresponding to argument <boxes_1>
-    are drawn in blue, and green for the other group. Corresponding box pairs will be joined
-    by a red line connecting the centres of the boxes
+    """
+    boxes_1中的边界框将被绘制成蓝色，boxes_2中的边界框将被绘制成绿色，每对边界框之间使用红线连接.
+
+    执行完该方法后，可以使用matplotlib显示图像：
+        import matplotlib.pyplot as plt
+        plt.imshow(image)
+        plt.show()
+    注：也可以使用PIL库的方法显示图像，例如直接执行image.show()，但有时候不能正常显示图像
 
     Arguments:
-        image(PIL Image)
-        boxes_1(torch.Tensor[N,4] or np.ndarray[N,4] or List[List[4]]): Bounding box
-            coordinates in the format (x1, y1, x2, y2)
+        image: PIL图片类型
+        boxes_1: (torch.Tensor[N,4] or np.ndarray[N,4] or List[List[4]]): 坐标格式为(x1, y1, x2, y2)
         boxes_2: Same format as above
-        width: Width of the boxes
+        width: 边界框线的宽度
     """
     if isinstance(boxes_1, (torch.Tensor, list)):
         boxes_1 = np.asarray(boxes_1)
@@ -77,11 +82,12 @@ def draw_box_pairs(image, boxes_1, boxes_2, width=1):
 
 def draw_dashed_line(image, xy, length=5, **kwargs):
     """Draw dashed lines onto a PIL image
+    绘制一条从xy[:2]到xy[2:]的虚线
 
     Arguments:
         image(PIL Image)
         xy(torch.Tensor[4] or np.ndarray[4] or List[4]): [x1, y1, x2, y2]
-        length(int): Length of line segments
+        length(int): 虚线中每条线段的长度(虚线是由若干个线段和空白组成的，线段和空白的长度相等)
     """
     if isinstance(xy, torch.Tensor):
         xy = xy.numpy()
@@ -106,7 +112,12 @@ def draw_dashed_line(image, xy, length=5, **kwargs):
         )
 
 def draw_dashed_rectangle(image, xy, **kwargs):
-    """Draw rectangle in dashed lines"""
+    """Draw rectangle in dashed lines
+    每次只能绘制1个虚线矩形框
+    Arguments:
+        image: PIL image
+        xy: 1个矩形框的坐标，格式为(x1, y1, x2, y2)
+    """
     if isinstance(xy, torch.Tensor):
         xy = xy.numpy()
     elif isinstance(xy, list):

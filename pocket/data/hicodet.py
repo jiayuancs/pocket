@@ -13,6 +13,7 @@ import numpy as np
 
 from typing import Optional, List, Callable, Tuple
 from .base import ImageDataset, DataSubset
+# from base import ImageDataset, DataSubset
 
 class HICODetSubset(DataSubset):
     def __init__(self, *args) -> None:
@@ -69,10 +70,10 @@ class HICODet(ImageDataset):
         with open(anno_file, 'r') as f:
             anno = json.load(f)
 
-        self.num_object_cls = 80
-        self.num_interation_cls = 600
-        self.num_action_cls = 117
-        self._anno_file = anno_file
+        self.num_object_cls = 80       # 物体类别数量(对应COCO目标检测的80个类别)
+        self.num_interation_cls = 600  # 动作和物体的组合数量
+        self.num_action_cls = 117      # 动作数量
+        self._anno_file = anno_file    # 标注文件路径
 
         # Load annotations
         self._load_annotation_and_metadata(anno)
@@ -84,16 +85,19 @@ class HICODet(ImageDataset):
     def __getitem__(self, i: int) -> tuple:
         """
         Arguments:
-            i(int): Index to an image
+            i(int): Index to an image，范围是[0, len(HICODet))
         
         Returns:
-            tuple[image, target]: By default, the tuple consists of a PIL image and a
-                dict with the following keys:
-                    "boxes_h": list[list[4]]
-                    "boxes_o": list[list[4]]
-                    "hoi":: list[N]
-                    "verb": list[N]
-                    "object": list[N]
+            tuple[image, target]:
+                默认情况下(没有应用transform对数据进行变换), image是PIL图片对象(RGB格式), target是标注信息字典。
+                target字典各字段的含义如下：
+                    "boxes_h": list[list[4]] 列表长度为N，表示当前图片中的第i个HOI的人框坐标，坐标格式为(x1, y1, x2, y2)
+                    "boxes_o": list[list[4]] 列表长度为N，表示当前图片中的第i个HOI的物框坐标，坐标格式为(x1, y1, x2, y2)
+                    "hoi":: list[N] 表示当前图片中的第i个HOI在整个数据集的600种HOI中的类别编号
+                    "verb": list[N] 表示当前图片中的第i个HOI的动作类别编号
+                    "object": list[N] 表示当前图片中的第i个HOI的物体类别编号
+                其中N表示当前图片中的HOI个数，注意：一个human-object pair可能对应多个HOI，因为
+                一个human-object pair可能对应多个动作类别。
         """
         intra_idx = self._idx[i]
         return self._transforms(
@@ -120,6 +124,11 @@ class HICODet(ImageDataset):
 
     @property
     def annotations(self) -> List[dict]:
+        """
+        是一个列表，每个元素是一个字典，对应一张图片的所有标注信息
+
+        Returns: list[dict]
+        """
         return self._anno
 
     @property
@@ -144,6 +153,9 @@ class HICODet(ImageDataset):
         HICODet.object_n_verb_to_interaction[obj_idx][verb_idx] gives interaction class
         index if the pair is valid, None otherwise
 
+        object_n_verb_to_interaction[i][j]表示第i个物体是否可以与第j个动作进行组合，如果可以，
+        则值为该HOI组合在600种HOI中的编号，否则为None
+
         Returns:
             list[list[117]]
         """
@@ -156,7 +168,8 @@ class HICODet(ImageDataset):
     def object_to_interaction(self) -> List[list]:
         """
         The interaction classes that involve each object type
-        
+        每个物体类别可能对应的所有HOI类别编号
+
         Returns:
             list[list]
         """
@@ -169,9 +182,13 @@ class HICODet(ImageDataset):
     def object_to_verb(self) -> List[list]:
         """
         The valid verbs for each object type
+        每个物体类别可能对应的所有动词索引编号
 
         Returns:
             list[list]
+
+        实例：
+            object_to_verb[i]表示第i个物体类别对应的所有可能的动作索引
         """
         obj_to_verb = [[] for _ in range(self.num_object_cls)]
         for corr in self._class_corr:
@@ -182,6 +199,8 @@ class HICODet(ImageDataset):
     def anno_interaction(self) -> List[int]:
         """
         Number of annotated box pairs for each interaction class
+        600种HOI出现的频率，其中有138种的频率小于10，记为rare set
+        注意：一个human-object pair可能对应多个HOI类别。
 
         Returns:
             list[600]
@@ -191,7 +210,8 @@ class HICODet(ImageDataset):
     @property
     def anno_object(self) -> List[int]:
         """
-        Number of annotated box pairs for each object class
+        Number of annotated box pairs for each object class.
+        每个物体类别对应的HOI标注个数（注意，一个human-object pair可能对应多个HOI标注，即对应多个动作）
 
         Returns:
             list[80]
@@ -204,7 +224,8 @@ class HICODet(ImageDataset):
     @property
     def anno_action(self) -> List[int]:
         """
-        Number of annotated box pairs for each action class
+        Number of annotated box pairs for each action class.
+        每个动作类别对应的HOI标注个数（注意，一个human-object pair可能对应多个HOI标注，即对应多个动作）
 
         Returns:
             list[117]
@@ -217,7 +238,7 @@ class HICODet(ImageDataset):
     @property
     def objects(self) -> List[str]:
         """
-        Object names 
+        Object names. HICO-DET中的80种物体类别的名称列表
 
         Returns:
             list[str]
@@ -241,6 +262,12 @@ class HICODet(ImageDataset):
 
         Returns:
             list[str]
+
+        示例：
+            HICO-DET数据集中有600种HOI，因此这里返回的就是一个长度为600的列表，
+            列表中的每个元素都是字符串，格式为'verb object'，例如：
+            - 'wash toothbrush'
+            - 'jump snowboard'
         """
         return [self._verbs[j] + ' ' + self.objects[i] 
             for _, i, j in self._class_corr]
@@ -248,12 +275,13 @@ class HICODet(ImageDataset):
     def split(self, ratio: float) -> Tuple[HICODetSubset, HICODetSubset]:
         """
         Split the dataset according to given ratio
+        按给定的比例将数据集划分为两部分
 
         Arguments:
             ratio(float): The percentage of training set between 0 and 1
         Returns:
-            train(Dataset)
-            val(Dataset)
+            train(Dataset): 占比为ratio
+            val(Dataset): 占比为1-ratio
         """
         perm = np.random.permutation(len(self._idx))
         n = int(len(perm) * ratio)
@@ -273,21 +301,50 @@ class HICODet(ImageDataset):
             f(dict): Dictionary loaded from {anno_file}.json
         """
         idx = list(range(len(f['filenames'])))
+        # 'empty'字段记录了那些没有人框和物框的图片
+        # 因为HICO-DET训练集中，有485张图片没有标记人框和物框，所以需要移除这些训练样本。
+        # 在HICO-DET测试集中，有112张图片没有标记人框和物框，所以也需要移除这些测试样本。
         for empty_idx in f['empty']:
             idx.remove(empty_idx)
 
+        # 统计600种HOI的频率
         num_anno = [0 for _ in range(self.num_interation_cls)]
         for anno in f['annotation']:
             for hoi in anno['hoi']:
                 num_anno[hoi] += 1
 
-        self._idx = idx
+        self._idx = idx            # 有效样本的索引
+        # 600种HOI出现的频率，其中有138种的频率小于10，记为rare set
+        # 注意：一个human-object pair可能对应多个HOI类别。
         self._num_anno = num_anno
 
-        self._anno = f['annotation']
-        self._filenames = f['filenames']
-        self._image_sizes = f['size']
+        self._anno = f['annotation']            # 是一个列表，每个元素是一个字典，对应一张图片的所有标注信息，坐标格式为(x1, y1, x2, y2)
+        self._filenames = f['filenames']        # 文件名列表
+        self._image_sizes = f['size']           # 文件大小列表 [[w, h], ...]
+        # 列表：[[hoi_id, object_id, verb_id], ...]，表示verb_id动词可以与object_id物体进行组合
         self._class_corr = f['correspondence']
-        self._empty_idx = f['empty']
-        self._objects = f['objects']
-        self._verbs = f['verbs']
+        self._empty_idx = f['empty']            # 无效样本的索引，这些样本缺少标注框信息
+        self._objects = f['objects']            # 80个物体类别名称
+        self._verbs = f['verbs']                # 117个动作类别名称
+
+if __name__ == '__main__':
+    HICO_ROOT = "/mnt/c/Document/10Dataset/HICO-DET"
+
+    hico_det_test = HICODet(
+        root=os.path.join(HICO_ROOT, "hico_20160224_det/images/test2015"),
+        anno_file=os.path.join(HICO_ROOT, "instances_test2015.json")
+    )
+
+    hico_det_train = HICODet(
+        root=os.path.join(HICO_ROOT, "hico_20160224_det/images/train2015"),
+        anno_file=os.path.join(HICO_ROOT, "instances_train2015.json")
+    )
+
+    from pocket.utils import draw_box_pairs
+    import matplotlib.pyplot as plt
+    image, annotation = hico_det_test[6]
+
+    draw_box_pairs(image, annotation['boxes_h'], annotation['boxes_o'], width=4)
+
+    plt.imshow(image)
+    plt.show()

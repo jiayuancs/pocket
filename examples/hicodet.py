@@ -75,7 +75,7 @@ def custom_collate(batch):
 
 if __name__ == '__main__':
 
-    HICO_ROOT = "./data/hicodet"
+    HICO_ROOT = "/mnt/c/Document/10Dataset/HICO-DET"
     if not os.path.exists(HICO_ROOT):
         raise ValueError("Cannot find the dataset. "
             "Make sure a symbolic link is created at {}".format(HICO_ROOT))
@@ -102,7 +102,7 @@ if __name__ == '__main__':
     )
 
     engine = MultiLabelClassificationEngine(net, criterion, train_loader,
-        val_loader=test_loader, ap_algorithm='11P', print_interval=500)
+        val_loader=test_loader, ap_algorithm='11P', print_interval=1)
 
     engine(1)
 

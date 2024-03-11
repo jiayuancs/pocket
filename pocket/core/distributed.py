@@ -23,8 +23,10 @@ from .engines import State
 class DistributedLearningEngine(State):
     r"""
     Base class for distributed learning engine
+    仅支持单机多卡，不支持多机多卡。
+    该类的使用方法见examples/distributed/mnist.py
 
-    Arguments:
+    Arguments: 各参数的含义与engines.LearningEngine一致，不再赘述。
 
     [REQUIRED ARGS]
         net(Module): The network to be trained
@@ -34,7 +36,8 @@ class DistributedLearningEngine(State):
             the following forms: Tensor, list[Tensor], dict[Tensor]
 
     [OPTIONAL ARGS]
-        device(int or torch.device): CUDA device to be used for training
+        device(int or torch.device): CUDA device to be used for training.
+            如果指定了设备，则仅在该设备上训练
         optim(str): Optimizer to be used. Choose between 'SGD' and 'Adam'
         optim_params(dict): Parameters for the selected optimizer
         optim_state_dict(dict): Optimizer state dict to be loaded
@@ -43,7 +46,39 @@ class DistributedLearningEngine(State):
         verbal(bool): If True, print statistics every fixed interval
         print_interval(int): Number of iterations to print statistics
         cache_dir(str): Directory to save checkpoints
-        find_unused_parameters(bool): torch.nn.parallel.DistributedDataParallel
+        find_unused_parameters(bool): 默认为False，即每个节点都计算了所有参数的梯度。
+            具体见：https://zhuanlan.zhihu.com/p/592515484
+
+    [各方法的生命周期，根据实际需要进行覆盖]
+        self._on_start()                        # 在所有的epoch开始前被调用
+        for epoch
+            self._on_start_epoch()              # 在每个epoch开始前被调用。通常用于sampler.set_epoch()
+            for mini-batch
+                self._on_start_iteration()      # 在每个iteration开始前被调用。通常在这里将数据迁移到指定的设备
+                self._on_each_iteration()       # 前向传播、反向传播等过程。
+                self._on_end_iteration()        # 执行完每个iteration后被调用。
+            self._on_end_epoch()                # 执行完每个epoch后被调用。通常在这里保存checkpoint，执行lr_scheduler
+        self._on_end()                          # 执行完所有的epoch后被调用。
+
+        注：iteration指的是训练每个mini-batch的过程，epoch指的是训练整个数据集的过程
+
+    [self._state中存储的状态信息]
+        net: 模型
+        optimizer: 优化器
+        scaler: GradScalar实例，用于进行损失缩放
+        epoch：当前是第几个epoch
+        iteration：当前是第几个mini-batch
+        lr_scheduler: 学习率调整器
+
+		# NumericalMeter是对deque的封装，用于记录最近的print_interval次iteration产生的相关信息，以便进行日志输出
+        running_loss(NumericalMeter)：每个iteration(mini-batch)的损失
+        t_data(NumericalMeter)：加载一个mini-batch的数据所需的时间
+        t_iteration(NumericalMeter)：执行一个mini-batch的时间（包括加载数据、推理、反向传播等的时间）
+
+        # 下面这三个属性是针对每个iteration(mini-batch)的
+        inputs: 当前iteration下，模型的输入
+        targets：当前iteration下，样本的ground truth
+        loss: 当前iteration下，损失函数值
     """
     def __init__(self,
             net: Module, criterion: Callable, train_loader: Iterable,
@@ -62,10 +97,13 @@ class DistributedLearningEngine(State):
 
         self._dawn = time.time()
 
+        # 获取当前进程的全局编号，从0开始，0表示master进程
         self._rank = dist.get_rank()
+        # 总的进程数量，一般情况下一个进程管理一张卡
         self._world_size = dist.get_world_size()
+        # 这里使用进程的全局编号获取设备，所以本代码只适用于`单机多卡`的情况。
         self._device = torch.device(device) if device is not None else torch.device(self._rank)
-        # Set the default device
+        # 设置当前进程默认使用的GPU，后面的xxx.cuda()就会将xxx迁移到该GPU上
         # NOTE Removing this line causes non-master subprocesses stuck at data loading
         torch.cuda.set_device(self._device)
 
@@ -100,6 +138,10 @@ class DistributedLearningEngine(State):
                     if isinstance(v, torch.Tensor):
                         state[k] = v.cuda()
 
+        # 自PyTorch1.9.0开始，DistributedDataParallel的device_ids参数最多只能传入1个设备，
+        # 即仅支持1个进程对应1个设备，不支持1个进程对应多个设备，具体可见：https://github.com/pytorch/pytorch/releases/tag/v1.9.0
+        # 这里没有指定output_device参数，默认output_device=device_ids[0]，在这里即为output_device=self._device.
+        # （output_device参数的具体含义是什么？为什么与device_ids相同？不管了，等用到再说，多半用不到）
         self._state.net = torch.nn.parallel.DistributedDataParallel(
             net, device_ids=[self._device],
             find_unused_parameters=find_unused_parameters
@@ -160,7 +202,7 @@ class DistributedLearningEngine(State):
 
     def _on_end_epoch(self):
         # Save checkpoint in the master process
-        if self._rank == 0:
+        if self._rank == 0:  # 在masker进程上保存checkpoint
             self.save_checkpoint()
         if self._state.lr_scheduler is not None:
             self._state.lr_scheduler.step()

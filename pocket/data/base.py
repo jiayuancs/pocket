@@ -21,6 +21,8 @@ class DataDict(dict):
     r"""
     Data dictionary class. This is a class based on python dict, with
     augmented utility for loading and saving
+
+    DataDict类似JavaScript中object类型，可以直接通过`实例名.属性名`来访问字典
     
     Arguments:
         input_dict(dict, optional): A Python dictionary
@@ -117,12 +119,15 @@ class ImageDataset(Dataset):
         self._transform = transform
         self._target_transform = target_transform
         if transforms is None:
+            # 如果transform和target_transform都是None，则StandardTransform就是简单地返回输入
             self._transforms = StandardTransform(transform, target_transform)
         elif transform is not None or target_transform is not None:
             print("WARNING: Argument transforms is given, transform/target_transform are ignored.")
             self._transforms = transforms
         else:
             self._transforms = transforms
+
+        # 执行到这里时，self._transforms一定不是None
 
     def __len__(self):
         raise NotImplementedError
@@ -145,7 +150,7 @@ class ImageDataset(Dataset):
         return reprstr
 
     def load_image(self, path: str) -> Image: 
-        """Load an image as PIL.Image"""
+        """Load an image as PIL.Image, 转换为RGB格式"""
         return Image.open(path).convert('RGB')
 
 class DataSubset(Dataset):

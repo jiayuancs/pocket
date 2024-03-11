@@ -162,8 +162,11 @@ def fasterrcnn_resnet_fpn(backbone_name, pretrained=False, trainable_backbone_la
     backbone = resnet_fpn_backbone(backbone_name, pretrained_backbone)
     model = FasterRCNN(backbone, num_classes, **kwargs)
     if pretrained and backbone_name == 'resnet50':
-        state_dict = models.utils.load_state_dict_from_url(
-            model_urls['fasterrcnn_resnet50_fpn_coco'])
+        # Fix: 新版本中，将torchvision.models.utils.load_state_dict_from_url
+        # 移动到了torch.utils.load_state_dict_from_url
+        # state_dict = models.utils.load_state_dict_from_url(
+        #     model_urls['fasterrcnn_resnet50_fpn_coco'])
+        state_dict = torch.hub.load_state_dict_from_url(model_urls['fasterrcnn_resnet50_fpn_coco'])
         if num_classes == 81:
             # Remove the parameters for the additional classes
             state_dict['roi_heads.box_predictor.cls_score.weight'] = \
